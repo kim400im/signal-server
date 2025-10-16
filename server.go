@@ -7,34 +7,28 @@ package main
 import (
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/gorilla/websocket"
 )
 
-// 클라이언트들을 관리하기 위한 맵
-var clients = make(map[*websocket.Conn]bool)
+var clients = make(map[*websocket.Conn]string) // Value를 string(주소)으로 변경
+var broadcast = make(chan map[*websocket.Conn]string)
 
-// 들어오는 메시지를 모든 클라이언트에게 전달하기 위한 채널
-var broadcast = make(chan Message)
-
-// HTTP 연결을 WebSocket으로 업그레이드하기 위한 설정
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		return true // 모든 Origin 허용 (테스트 목적)
+		return true
 	},
 }
 
-// 주고받을 메시지 구조체 정의
+// Message 구조체는 이제 서버에서만 사용
 type Message struct {
 	Type string `json:"type"`
 	Body string `json:"body"`
 }
 
 func main() {
-	// "/ws" 엔드포인트로 오는 HTTP 요청을 처리하는 핸들러 등록
 	http.HandleFunc("/ws", handleConnections)
-
-	// 메시지 브로드캐스트를 처리하는 고루틴 시작
 	go handleMessages()
 
 	log.Println("시그널링 서버 시작 (포트: 8080)")
@@ -44,42 +38,59 @@ func main() {
 	}
 }
 
-// 각 클라이언트의 WebSocket 연결을 처리
 func handleConnections(w http.ResponseWriter, r *http.Request) {
-	// HTTP -> WebSocket으로 업그레이드
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer ws.Close()
 
-	// 새로운 클라이언트를 맵에 등록
-	clients[ws] = true
-	log.Println("새로운 클라이언트 접속")
+	// *** 수정된 부분 시작 ***
+	// 클라이언트가 보내주는 UDP 포트 번호를 기다림
+	var msg Message
+	err = ws.ReadJSON(&msg)
+	if err != nil {
+		log.Println("클라이언트 UDP 포트 수신 실패:", err)
+		return
+	}
 
+	// WebSocket 연결에서 클라이언트의 공인 IP 주소를 가져옴
+	publicIP := strings.Split(ws.RemoteAddr().String(), ":")[0]
+	// 클라이언트가 알려준 UDP 포트와 조합하여 최종 P2P 주소를 완성
+	peerAddr := publicIP + ":" + msg.Body
+
+	clients[ws] = peerAddr
+	log.Printf("새로운 클라이언트 접속: %s", peerAddr)
+
+	// 현재 접속한 모든 클라이언트 정보를 broadcast 채널로 보냄
+	broadcast <- clients
+	// *** 수정된 부분 끝 ***
+
+	// 클라이언트 연결이 끊어지면 맵에서 제거하고 다시 브로드캐스트
 	for {
-		var msg Message
-		// 클라이언트로부터 메시지(JSON)를 읽음
-		err := ws.ReadJSON(&msg)
-		if err != nil {
-			log.Printf("error: %v", err)
+		if _, _, err := ws.NextReader(); err != nil {
 			delete(clients, ws)
+			log.Printf("클라이언트 접속 끊어짐: %s", peerAddr)
+			broadcast <- clients
 			break
 		}
-		// 읽은 메시지를 broadcast 채널로 보냄
-		broadcast <- msg
 	}
 }
 
-// broadcast 채널에 들어온 메시지를 모든 클라이언트에게 전송
 func handleMessages() {
 	for {
-		// 채널에서 메시지를 기다림
-		msg := <-broadcast
-
-		// 연결된 모든 클라이언트에게 메시지를 전송
-		for client := range clients {
-			err := client.WriteJSON(msg)
+		clientMap := <-broadcast
+		// 모든 클라이언트 목록을 각 클라이언트에게 전송
+		for client := range clientMap {
+			// 주소 목록 생성 (자기 자신 제외)
+			var addrs []string
+			for otherClient, addr := range clientMap {
+				if client != otherClient {
+					addrs = append(addrs, addr)
+				}
+			}
+			// 다른 피어의 주소를 JSON 형태로 전송
+			err := client.WriteJSON(addrs)
 			if err != nil {
 				log.Printf("error: %v", err)
 				client.Close()

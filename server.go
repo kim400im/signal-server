@@ -12,8 +12,15 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var clients = make(map[*websocket.Conn]string) // Value를 string(주소)으로 변경
-var broadcast = make(chan map[*websocket.Conn]string)
+// *** 수정: 사설 IP 정보를 포함한 구조체 ***
+type ClientAddr struct {
+	PublicIP  string `json:"public_ip"`
+	PrivateIP string `json:"private_ip"`
+	Port      string `json:"port"`
+}
+
+var clients = make(map[*websocket.Conn]ClientAddr)
+var broadcast = make(chan map[*websocket.Conn]ClientAddr)
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
@@ -45,22 +52,21 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.Close()
 
-	// *** 수정된 부분 시작 ***
-	// 클라이언트가 보내주는 UDP 포트 번호를 기다림
-	var msg Message
-	err = ws.ReadJSON(&msg)
+	// *** 수정: 클라이언트로부터 UDP 정보 수신 ***
+	var addrInfo ClientAddr
+	err = ws.ReadJSON(&addrInfo)
 	if err != nil {
-		log.Println("클라이언트 UDP 포트 수신 실패:", err)
+		log.Println("클라이언트 UDP 정보 수신 실패:", err)
 		return
 	}
 
-	// WebSocket 연결에서 클라이언트의 공인 IP 주소를 가져옴
+	// WebSocket 연결에서 클라이언트의 공인 IP 주소 추출
 	publicIP := strings.Split(ws.RemoteAddr().String(), ":")[0]
-	// 클라이언트가 알려준 UDP 포트와 조합하여 최종 P2P 주소를 완성
-	peerAddr := publicIP + ":" + msg.Body
+	addrInfo.PublicIP = publicIP
 
-	clients[ws] = peerAddr
-	log.Printf("새로운 클라이언트 접속: %s", peerAddr)
+	clients[ws] = addrInfo
+	log.Printf("새로운 클라이언트 접속 - 공인IP: %s, 사설IP: %s, 포트: %s",
+		addrInfo.PublicIP, addrInfo.PrivateIP, addrInfo.Port)
 
 	// 현재 접속한 모든 클라이언트 정보를 broadcast 채널로 보냄
 	broadcast <- clients
@@ -70,7 +76,7 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	for {
 		if _, _, err := ws.NextReader(); err != nil {
 			delete(clients, ws)
-			log.Printf("클라이언트 접속 끊어짐: %s", peerAddr)
+			log.Printf("클라이언트 접속 끊어짐: %s")
 			broadcast <- clients
 			break
 		}
@@ -80,17 +86,20 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 func handleMessages() {
 	for {
 		clientMap := <-broadcast
-		// 모든 클라이언트 목록을 각 클라이언트에게 전송
+		// 모든 클라이언트에게 다른 피어의 주소 정보 전송
 		for client := range clientMap {
-			// 주소 목록 생성 (자기 자신 제외)
-			var addrs []string
+			var peerAddrs []map[string]string
 			for otherClient, addr := range clientMap {
 				if client != otherClient {
-					addrs = append(addrs, addr)
+					peerInfo := map[string]string{
+						"public_ip":  addr.PublicIP,
+						"private_ip": addr.PrivateIP,
+						"port":       addr.Port,
+					}
+					peerAddrs = append(peerAddrs, peerInfo)
 				}
 			}
-			// 다른 피어의 주소를 JSON 형태로 전송
-			err := client.WriteJSON(addrs)
+			err := client.WriteJSON(peerAddrs)
 			if err != nil {
 				log.Printf("error: %v", err)
 				client.Close()

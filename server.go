@@ -61,7 +61,12 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// WebSocket 연결에서 클라이언트의 공인 IP 주소 추출
-	publicIP := strings.Split(ws.RemoteAddr().String(), ":")[0]
+	remoteAddr := ws.RemoteAddr().String()
+	publicIP := strings.Split(remoteAddr, ":")[0]
+
+	// IPv6 주소에서 대괄호 제거 (예: [::1] -> ::1)
+	publicIP = strings.Trim(publicIP, "[]")
+
 	addrInfo.PublicIP = publicIP
 
 	clients[ws] = addrInfo

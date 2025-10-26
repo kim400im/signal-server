@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -36,7 +37,6 @@ type Message struct {
 
 func main() {
 	http.HandleFunc("/ws", handleConnections)
-	go handleMessages()
 
 	log.Println("시그널링 서버 시작 (포트: 8080)")
 	err := http.ListenAndServe(":8080", nil)
@@ -69,42 +69,41 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 		addrInfo.PublicIP, addrInfo.PrivateIP, addrInfo.Port)
 
 	// 현재 접속한 모든 클라이언트 정보를 broadcast 채널로 보냄
-	broadcast <- clients
+	go broadcastPeerList() // 그리고 주기적으로 호출하는 부분도 추가
 	// *** 수정된 부분 끝 ***
+	// 주기적으로 피어 목록 전송
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	go func() {
+		for range ticker.C {
+			broadcastPeerList()
+		}
+	}()
 
 	// 클라이언트 연결이 끊어지면 맵에서 제거하고 다시 브로드캐스트
 	for {
 		if _, _, err := ws.NextReader(); err != nil {
 			delete(clients, ws)
 			log.Printf("클라이언트 접속 끊어짐: %s")
-			broadcast <- clients
+			broadcastPeerList()
 			break
 		}
 	}
 }
 
-func handleMessages() {
-	for {
-		clientMap := <-broadcast
-		// 모든 클라이언트에게 다른 피어의 주소 정보 전송
-		for client := range clientMap {
-			var peerAddrs []map[string]string
-			for otherClient, addr := range clientMap {
-				if client != otherClient {
-					peerInfo := map[string]string{
-						"public_ip":  addr.PublicIP,
-						"private_ip": addr.PrivateIP,
-						"port":       addr.Port,
-					}
-					peerAddrs = append(peerAddrs, peerInfo)
+func broadcastPeerList() {
+	for client := range clients {
+		var peerAddrs []map[string]string
+		for otherClient, addr := range clients {
+			if client != otherClient {
+				peerInfo := map[string]string{
+					"public_ip":  addr.PublicIP,
+					"private_ip": addr.PrivateIP,
+					"port":       addr.Port,
 				}
-			}
-			err := client.WriteJSON(peerAddrs)
-			if err != nil {
-				log.Printf("error: %v", err)
-				client.Close()
-				delete(clients, client)
+				peerAddrs = append(peerAddrs, peerInfo)
 			}
 		}
+		client.WriteJSON(peerAddrs)
 	}
 }

@@ -7,7 +7,6 @@ package main
 import (
 	"log"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -61,13 +60,13 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// WebSocket 연결에서 클라이언트의 공인 IP 주소 추출
-	remoteAddr := ws.RemoteAddr().String()
-	publicIP := strings.Split(remoteAddr, ":")[0]
+	// remoteAddr := ws.RemoteAddr().String()
+	// publicIP := strings.Split(remoteAddr, ":")[0]
 
-	// IPv6 주소에서 대괄호 제거 (예: [::1] -> ::1)
-	publicIP = strings.Trim(publicIP, "[]")
+	// // IPv6 주소에서 대괄호 제거 (예: [::1] -> ::1)
+	// publicIP = strings.Trim(publicIP, "[]")
 
-	addrInfo.PublicIP = publicIP
+	// addrInfo.PublicIP = publicIP
 
 	clients[ws] = addrInfo
 	log.Printf("새로운 클라이언트 접속 - 공인IP: %s, 사설IP: %s, 포트: %s",
